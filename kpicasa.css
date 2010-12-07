@@ -1,0 +1,15 @@
+.kpg-album-list{
+clear:both;
+}
+
+.kpg-album{
+float:left;
+height:250px;
+padding:3px;
+}
+
+.kpg-item{
+float:left;
+height:150px;
+padding:3px;
+}

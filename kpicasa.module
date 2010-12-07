@@ -1,0 +1,366 @@
+<?php
+function kpicasa_init(){
+  drupal_add_css(drupal_get_path('module', 'kpicasa') .'/kpicasa.css');
+}
+
+function kpicasa_menu() {
+  $items = array();
+
+  $items['admin/settings/kpicasa'] = array(
+    'title' => 'kPicasa settings',
+    'description' => 'Settings of the kPicasa module',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('kpicasa_admin_settings'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+	
+  return $items;
+}
+
+function kpicasa_admin_settings() {
+	$form = array();
+	
+	$settings = _kpicasa_get_settings();
+	
+  $form['kpicasa_general_settings'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('General settings'),
+    '#tree' => TRUE,
+  );
+  
+  $form['kpicasa_general_settings']['username'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Picasa Web Albums Username'),
+   	'#default_value' => $settings['kpicasa_general_settings']['username'], 
+	);
+	
+  $form['kpicasa_album_list'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Album list'),
+    '#tree' => TRUE,
+  );
+  
+  $form['kpicasa_album_list']['extra'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Show extra information'),
+    '#options' => array(
+      'summary' => t('Summary'),
+      'location' => t('Location'),
+      'published_date' => t('Published date'),
+      'number_of_pictures' => t('Number of pictures'),
+      ),  
+    '#default_value' => $settings['kpicasa_album_list']['extra'],
+  );
+  
+  $form['picture_list'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Picture list'),
+    '#tree' => TRUE,
+  );
+  
+  return system_settings_form($form);
+}
+
+function _kpicasa_get_settings() {
+	$settings['kpicasa_general_settings'] = variable_get('kpicasa_general_settings', array('username' => ''));
+	$settings['kpicasa_album_list'] = variable_get('kpicasa_album_list', array('extra' => array(
+	                                                                                         'summary' => 0,
+                                                                                           'location' => 0,
+                                                                                           'publised_date' => 0,
+                                                                                           'number_of_pictures' => 0,
+	)));
+	
+	return $settings;
+}
+
+function kpicasa_filter($op, $delta = 0, $format = -1, $text = '', $cache_id = 0) {
+  switch ($op) {
+    case 'list':
+      return array(0 => t('Picasa'));
+
+    case 'description':
+      return t('Allows users to integrate Picasa albums.');
+
+    case 'prepare':
+      // Note: we use the bytes 0xFE and 0xFF to replace < > during the
+      // filtering process. These bytes are not valid in UTF-8 data and thus
+      // least likely to cause problems.
+      $text = preg_replace('@<code>(.+?)</code>@se', "'\xFEcode\xFF'. codefilter_escape('\\1') .'\xFE/code\xFF'", $text);
+      $text = preg_replace('@<(\?(php)?|%)(.+?)(\?|%)>@se', "'\xFEphp\xFF'. codefilter_escape('\\3') .'\xFE/php\xFF'", $text);
+      return $text;
+
+    case 'process':
+      $picasas = _kpicasa_prepare($text);   //returns an array of $tables[0] = table macro $table[1]= table html
+      if ($picasas) {                    // there are table macros in this node
+        return str_replace($picasas[0], $picasas[1], $text);
+      }
+      else {
+        return $text;
+      }
+
+    case 'prepare':
+      return $text;
+
+    case 'no cache':
+      return TRUE; 
+      
+   default:
+      return $text;
+  }
+}
+
+function _kpicasa_prepare($intext) {
+  $out = FALSE;
+  $matches = array();
+  preg_match_all('/\[picasa([^\[\]]+ )* \] /x', $intext, $matches);
+  $i = 0;
+
+  while (isset($matches[1][$i])) {
+    $out[0][$i] = $matches[0][$i];    
+    //$map = array('#settings' => gmap_parse_macro($matches[1][$i], $ver));
+    //$out[1][$i] = theme('gmap', $map);
+    //drupal_set_message('settings: '.$matches[1][$i]);
+    $out[1][$i] = _kpicasa_show_albums($matches[1][$i]);
+    $i++;
+  } // endwhile process macro
+  return $out;
+}
+
+function _kpicasa_show_albums($options_string){
+	// Get the settings
+	$settings = _kpicasa_get_settings();
+	
+	// Convert options string to array.
+	$options = array();
+	if ($options_string) {
+		if (substr($options_string,0,1) == '|') {
+			$options_string = substr($options_string, 1);
+		}
+		
+		if ($options_string) {
+			$options = explode('|', $options_string);
+		}
+		
+	}
+	
+	$username = '';
+	if ($options[0]) {
+		$username = $options[0];
+	}
+	else {
+		$username = $settings['kpicasa_general_settings']['username'];
+	}
+	
+	// Check if an album contants has to be schown.
+	if (isset($_GET['album'])) {
+		if (!is_array($_GET['album'])) {
+		  if (strpos($_GET['album'], '/')) {
+		  	$album_parts = explode('/', $_GET['album']);
+		  	if (count($album_parts) == 2 && $album_parts[0] == $username) {
+		  		return _kpicasa_show_album($username, $album_parts[1]);
+		  	}
+		  }
+		}
+		else {
+      foreach ($_GET['album'] as $album) {
+        $album_parts = explode('/', $_GET['album']);
+        if (count($album_parts) == 2 && $album_parts[0] == $username) {
+          return _kpicasa_show_album($username, $album_parts[1]);
+        }      	
+      }
+		}
+	}
+	
+  // Get the XML.  
+  $url  = 'http://picasaweb.google.com/data/feed/api/user/' . urlencode($username) . '?kind=album';
+  $data = @file_get_contents( $url );
+  if (!$data) {
+    drupal_set_message(t('Unable to get Picasa album for this user %username', array('%username' => $username)), 'error');
+    return '';
+  }
+  $data = str_replace('gphoto:', 'gphoto_', $data);
+  $data = str_replace('media:', 'media_', $data);
+  $xml = @simplexml_load_string($data);
+  if ( $xml === false ) {
+  	drupal_set_message(t('Invalid XML received from Picasa'), 'error');
+  	return '';
+  }
+
+  // Prepare some variables.
+  /* TODO paging stuff
+  $page = isset($_GET['kpgp']) && intval($_GET['kpgp']) > 1 ? intval($_GET['kpgp']) : 1; // kpgp = kPicasa Gallery Page
+
+      $url = get_permalink();
+      if ( $page > 1 )
+      {
+        $url = add_query_arg('kpgp', $page, $url);
+      }
+
+      if ( $this->config['albumPerPage'] > 0 )
+      {
+        $start = ($page - 1) * $this->config['albumPerPage'];
+        $stop  = $start + $this->config['albumPerPage'] - 1;
+      }
+      else
+      {
+        $start = 0;
+        $stop  = count( $xml->entry ) - 1;
+      }
+*/
+
+  // Set the class, depending on how many albums per row
+  //$class = $this->config['albumPerRow'] == 1 ? 'kpg-thumb-onePerRow' : 'kpg-thumb-multiplePerRow';
+  $class = 'kpg-thumb-multiplePerRow';
+
+  // Loop through the albums.
+  $output = '<div class="kpg-album-list">';
+  $i = 0; $j = 0;
+  foreach( $xml->entry as $album ) {
+  	$output .= '<div class="kpg-album">';
+    $name      = (string) $album->gphoto_name;
+    $title     = htmlspecialchars( (string) $album->title );
+    $nbPhotos  = (string) $album->gphoto_numphotos;
+    $albumURL  = drupal_get_path_alias(request_uri());
+    $albumURL .= (strpos($albumURL, '?') ? '&' : '?') . 'album='.$username.'/'.$name;
+    $thumbURL  = (string) $album->media_group->media_thumbnail['url'];
+    $thumbW    = (string) $album->media_group->media_thumbnail['width'];
+    $thumbH    = (string) $album->media_group->media_thumbnail['height'];
+
+    $output .= "<a href='$albumURL'><img src='$thumbURL' height='$thumbH' width='$thumbW' alt='".str_replace("'", "&#39;", $title)."' class='kpg-thumb $class' /></a>";
+    $output .= '<div class="kpg-title"><a href="'.$albumURL.'">'.$title.($settings['kpicasa_album_list']['extra']['number_of_pictures'] ? ' ('.$nbPhotos.')' : '').'</a></div>';
+
+    if ($settings['kpicasa_album_list']['extra']['summary']) {
+      $summary   = htmlspecialchars( (string) $album->summary );
+      $output .= "<div class='kpg-summary'>$summary</div>";
+    }
+    
+    if ($settings['kpicasa_album_list']['extra']['location']) {
+	    $location  = htmlspecialchars( (string) $album->gphoto_location );
+	    $output .= "<div class='kpg-location'>$location</div>";
+    }
+	  
+    if ($settings['kpicasa_album_list']['extra']['published_date']) {
+      $published = htmlspecialchars( date('Y-m-d', strtotime( $album->published ))); // that way it keeps the timezone
+    	$output .= "<div class='kpg-published'>$published</div>";
+    }
+
+    /*
+          if ( $this->config['albumSummary'] == true && strlen($summary) )
+          {
+            print "<div class='kpg-summary'>$summary</div>";
+          }
+          if ( $this->config['albumLocation'] == true && strlen($location) )
+          {
+            print "<div class='kpg-location'>$location</div>";
+          }
+          if ( $this->config['albumPublished'] == true )
+          {
+            print "<div class='kpg-published'>$published</div>";
+          }
+          if ( $this->config['albumNbPhoto'] == 1 )
+          {
+            print '<div class="kpg-nbPhotos">'.sprintf(__ngettext('%d photo', '%d photos', $nbPhotos, 'kpicasa_gallery'), $nbPhotos).'</div>';
+          }
+          */
+    $j++;
+    $i++;
+    $output .= '</div>'; // End div class="kpg-album".
+  }
+  $output .= '</div>'; // End div class="kpg-album-list".
+  return $output;
+}
+
+function _kpicasa_show_album($username, $album) {
+  //----------------------------------------
+  // Get the XML
+  //----------------------------------------
+  $url = 'http://picasaweb.google.com/data/feed/api/user/'.urlencode($username).'/album/'.urlencode($album).'?kind=photo';
+  /*
+  if ( strlen($authKey) > 0 ) {
+    $url .= '&authkey='.$authKey;
+  }
+  */
+
+  $data = @file_get_contents( $url );
+  if (!$data) {
+    drupal_set_message(t('Unable to get Picasa album for this user %username', array('%username' => $username)), 'error');
+    return '';
+  }        
+  $data = str_replace('gphoto:', 'gphoto_', $data);
+  $data = str_replace('media:', 'media_', $data);
+        
+  $xml = @simplexml_load_string($data);
+  if ( $xml === false ) {
+    drupal_set_message(t('Unable to get Picasa album for this user %username', array('%username' => $username)), 'error');
+    return '';
+  }
+
+  
+  //----------------------------------------
+  // TODO Display "back" link
+  //----------------------------------------
+  /*
+  if ( !$direct ) {
+    $backURL = remove_query_arg('album');
+    $backURL = remove_query_arg('kpap', $backURL);
+    print "<div id='kpg-backLink'><a href='$backURL'>&laquo; ".__('Back to album list', 'kpicasa_gallery').'</a></div>';
+  }
+  */
+
+  //----------------------------------------
+  // Display album information
+  //----------------------------------------
+  $albumTitle     = htmlspecialchars( (string) $xml->title );
+  $albumSummary   = htmlspecialchars( (string) $xml->subtitle );
+  $albumLocation  = htmlspecialchars( (string) $xml->gphoto_location );
+  //$albumPublished = wp_specialchars( date($this->config['dateFormat'], strtotime( $xml->published ))); // that way it keeps the timezone
+  $albumNbPhotos  = (string) $xml->gphoto_numphotos;
+  $albumSlideshow = (string) $xml->link[2]['href'];
+
+  $output = '';
+  $output .= '<div id="kpg-album-description">';
+  $output .= "<div id='kpg-title'>$albumTitle</div>";
+
+  $output .= "<div id='kpg-summary'>$albumSummary</div>";
+  $output .= "<div id='kpg-location'>$albumLocation</div>";
+  //$output .= "<div id='kpg-published'>$albumPublished</div>";
+  $output .= '<div id="kpg-nbPhotos">'.$albumNbPhotos.'</div>';
+  //$output .= "<div id='kpg-slideshow'><a href='$albumSlideshow'>".__('Slideshow', 'kpicasa_gallery')."</a></div>";
+
+  $output .= '</div>';
+  $thumbIndex = 1;
+
+  //----------------------------------------
+  // Loop through the pictures
+  //----------------------------------------
+  $output .= '<div class="kpg-pictures">';
+  $i = 0; $j = 0;
+  foreach( $xml->entry as $photo ) {
+    $isVideo = (string) $photo->media_group->media_content[1]['medium'] == 'video' ? true : false;
+        
+    $summary  = htmlspecialchars((string) $photo->summary );
+    $thumbURL = (string) $photo->media_group->media_thumbnail[$thumbIndex]['url'];
+    $thumbW   = (string) $photo->media_group->media_thumbnail[$thumbIndex]['width'];
+    $thumbH   = (string) $photo->media_group->media_thumbnail[$thumbIndex]['height'];
+
+    if ( $isVideo == true ) {
+    	$output .= '<div class="kpg-item kpg-video">';
+      $output .= 'video not yet supported';
+      $output .= '</div>';
+    }
+    else {
+    	//$fullURL = (string) $photo->link[1]['href'];
+      $fullURL = (string) $photo->media_group->media_thumbnail[1]['url'];
+      $fullURL = str_replace('/s144/', '/s800/', $fullURL);
+    	
+      $output .= '<div class="kpg-item kpg-picture">';
+      $output .= "<a href='$fullURL' rel='lightbox'><img src='$thumbURL' height='$thumbH' width='$thumbW' alt='' class='kpg-thumb' /></a>";
+      $output .= '</div>';
+    }
+  }
+  $output .= '</div>';
+  $output .= '<div style="clear: both;" />';
+
+  return $output;
+}

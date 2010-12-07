@@ -1,0 +1,6 @@
+To use the module: 
+- Install 
+- Enable 
+- Edit your input filters and enable 'Picasa' 
+- Set the settings on admin/settings/kpicasa 
+- Create or edit a page and enter [picasa] somewhere in the text ([picasa|username] is also supported. 
